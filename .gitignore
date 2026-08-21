@@ -1,0 +1,26 @@
+# Runtime data and local deployments
+conversations.json
+users.json
+sessions.json
+registration.key
+registration-keys.json
+uploads/
+data/
+runtime/
+
+# Secrets and certificates
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.cer
+*.csr
+*.srl
+
+# Local backups and editor files
+*.bak
+*.bak.*
+*.swp
+.DS_Store
+
