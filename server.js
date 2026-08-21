@@ -531,6 +531,7 @@ function publicConversation(conversation) {
     reasoningEffort: settings.reasoningEffort,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
+    running: activeRuns.has(conversation.id),
     messages: conversation.messages.map(publicMessage)
   };
 }
@@ -546,7 +547,8 @@ function conversationSummary(conversation) {
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     messageCount: conversation.messages.length,
-    preview: last ? last.text.slice(0, 90) : '还没有消息'
+    preview: last ? last.text.slice(0, 90) : '还没有消息',
+    running: activeRuns.has(conversation.id)
   };
 }
 

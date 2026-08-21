@@ -785,6 +785,9 @@
     let railFileItems = new Map();
     let selectedRailFile = '';
     let settingsPage = 'appearance';
+    let activeRunPollTimer = null;
+    let activeRunPollId = null;
+    let activeRunPollInFlight = false;
 
     function applyTheme(theme, save = true) {
       const nextTheme = theme === 'light' ? 'light' : 'dark';
@@ -1187,12 +1190,65 @@
       refreshTerminalDrawer();
       requestAnimationFrame(() => { messages.style.scrollBehavior = previousScrollBehavior; });
     }
+    function stopActiveRunMonitor() {
+      if (activeRunPollTimer) clearInterval(activeRunPollTimer);
+      activeRunPollTimer = null;
+      activeRunPollId = null;
+      activeRunPollInFlight = false;
+    }
+    function ensureRecoveredRunPanel() {
+      if (activeRunPanel) return;
+      createRunPanel();
+      appendRunEvent({type: 'status', text: '后台处理中'});
+    }
+    async function pollActiveRun(id) {
+      if (activeRunPollId !== id || currentConversationId !== id || activeRunPollInFlight) return;
+      activeRunPollInFlight = true;
+      try {
+        const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+        const conversation = data.conversation;
+        if (activeRunPollId !== id || currentConversationId !== id) return;
+        if (conversation?.running) return;
+        stopActiveRunMonitor();
+        conversationCache.set(id, conversation);
+        renderConversation(conversation);
+        setBusy(false);
+        await loadList();
+      } catch (error) {
+        if (currentConversationId === id) showToast(`恢复对话状态失败：${error.message}`);
+      } finally {
+        activeRunPollInFlight = false;
+      }
+    }
+    function startActiveRunMonitor(id) {
+      stopActiveRunMonitor();
+      if (!id || currentConversationId !== id) return;
+      activeRunPollId = id;
+      setBusy(true);
+      ensureRecoveredRunPanel();
+      pollActiveRun(id);
+      activeRunPollTimer = setInterval(() => pollActiveRun(id), 1500);
+    }
+    async function recoverConversationAfterConflict(id) {
+      conversationCache.delete(id);
+      const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+      if (currentConversationId !== id) return false;
+      const conversation = data.conversation;
+      conversationCache.set(id, conversation);
+      renderConversation(conversation);
+      if (conversation.running) {
+        startActiveRunMonitor(id);
+        return true;
+      }
+      return false;
+    }
     async function loadList() {
       const data = await request('/api/conversations');
       conversations = data.conversations || [];
       renderList();
     }
     async function selectConversation(id) {
+      if (activeRunPollId && activeRunPollId !== id) stopActiveRunMonitor();
       currentConversationId = id;
       localStorage.setItem('codexConversation', id);
       renderList();
@@ -1200,13 +1256,17 @@
       const cached = conversationCache.get(id);
       if (cached) {
         renderConversation(cached);
+        if (cached.running) startActiveRunMonitor(id);
         return;
       }
       renderConversationLoading();
       try {
         const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
         conversationCache.set(id, data.conversation);
-        if (currentConversationId === id) renderConversation(data.conversation);
+        if (currentConversationId === id) {
+          renderConversation(data.conversation);
+          if (data.conversation.running) startActiveRunMonitor(id);
+        }
       } catch (error) {
         if (currentConversationId === id) renderWelcome();
         showToast(error.message);
@@ -1874,7 +1934,9 @@
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || '请求失败');
+        const error = new Error(data.error || '请求失败');
+        error.status = response.status;
+        throw error;
       }
       if (!response.body) throw new Error('浏览器不支持实时响应流');
       const reader = response.body.getReader();
@@ -1942,6 +2004,7 @@
       renderPendingImages();
       setBusy(true);
       const id = currentConversationId;
+      let keepBusy = false;
       try {
         const result = await streamMessage(id, {
           conversationId: id,
@@ -1959,14 +2022,23 @@
         if (currentConversationId === id && result.conversation) document.getElementById('chatTitle').textContent = result.conversation.title || '新对话';
         await loadList();
       } catch (error) {
-        if (error.messageData && currentConversationId === id) renderMessage(error.messageData, {skipRunEvents: true});
-        appendRunEvent({type: 'error', text: error.message});
-        activeRunPanel?.classList.add('done');
-        if (activeRunPanel) updateRunCount(activeRunPanel);
-        showToast(error.message);
-        await loadList();
+        if (error.status === 409) {
+          try {
+            keepBusy = await recoverConversationAfterConflict(id);
+            showToast(keepBusy ? '上一条消息仍在处理中，已恢复监控。' : '上一条消息已经结束，请重新加载对话。');
+          } catch (recoverError) {
+            showToast(recoverError.message || error.message);
+          }
+        } else {
+          if (error.messageData && currentConversationId === id) renderMessage(error.messageData, {skipRunEvents: true});
+          appendRunEvent({type: 'error', text: error.message});
+          activeRunPanel?.classList.add('done');
+          if (activeRunPanel) updateRunCount(activeRunPanel);
+          showToast(error.message);
+          await loadList();
+        }
       }
-      setBusy(false);
+      if (!keepBusy) setBusy(false);
       input.focus();
     }
     let stopRequested = false;
