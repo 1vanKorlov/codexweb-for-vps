@@ -775,6 +775,9 @@
     let currentConversationId = null;
     let pendingImages = [];
     let busy = false;
+    let activeStreamController = null;
+    let activeStreamId = null;
+    let activeSendToken = 0;
     let activeRunPanel = null;
     let activeConversationData = null;
     let toastTimer;
@@ -1248,6 +1251,11 @@
       renderList();
     }
     async function selectConversation(id) {
+      if (currentConversationId !== id && (busy || activeStreamController)) {
+        activeSendToken += 1;
+        if (activeStreamController) activeStreamController.abort();
+        setBusy(false);
+      }
       if (activeRunPollId && activeRunPollId !== id) stopActiveRunMonitor();
       currentConversationId = id;
       localStorage.setItem('codexConversation', id);
@@ -1296,9 +1304,9 @@
         else await createConversation();
       } catch (error) { showToast(error.message); }
     }
-    function setBusy(value) {
+    function setBusy(value, resetStop = true) {
       busy = value;
-      if (!value) stopRequested = false;
+      if (!value && resetStop) stopRequested = false;
       send.disabled = false;
       attach.disabled = value;
       input.disabled = value;
@@ -1927,60 +1935,76 @@
       updateRunCount(panel);
     }
     async function streamMessage(id, payload) {
-      const response = await fetch(`${base}/api/chat/stream`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        const error = new Error(data.error || '请求失败');
-        error.status = response.status;
+      const controller = new AbortController();
+      activeStreamController = controller;
+      activeStreamId = id;
+      try {
+        const response = await fetch(`${base}/api/chat/stream`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          const error = new Error(data.error || '请求失败');
+          error.status = response.status;
+          throw error;
+        }
+        if (!response.body) throw new Error('浏览器不支持实时响应流');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalData = null;
+        let errorData = null;
+        const consume = line => {
+          if (!line.trim()) return;
+          let event;
+          try { event = JSON.parse(line); } catch { return; }
+          if (event.type === 'final') {
+            removeLastThought(event.answer || event.message?.text || '');
+            finalData = event;
+          }
+          else if (event.type === 'title') {
+            if (currentConversationId === id) document.getElementById('chatTitle').textContent = event.title || '新对话';
+            const item = conversations.find(item => item.id === id);
+            if (item) item.title = event.title || item.title;
+            renderList();
+          }
+          else if (event.type === 'error') errorData = event;
+          else if (event.type === 'done') {
+            activeRunPanel?.classList.add('done');
+            if (activeRunPanel) updateRunCount(activeRunPanel);
+          }
+          else appendRunEvent(event);
+        };
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, {stream: true});
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          lines.forEach(consume);
+        }
+        buffer += decoder.decode();
+        consume(buffer);
+        if (!finalData) {
+          const error = new Error(errorData?.text || 'Codex 没有返回最终结果');
+          error.messageData = errorData?.message || null;
+          error.streamDisconnected = true;
+          throw error;
+        }
+        return finalData;
+      } catch (error) {
+        if (!error.status) error.streamDisconnected = true;
+        if (controller.signal.aborted) error.clientAborted = true;
         throw error;
-      }
-      if (!response.body) throw new Error('浏览器不支持实时响应流');
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finalData = null;
-      let errorData = null;
-      const consume = line => {
-        if (!line.trim()) return;
-        let event;
-        try { event = JSON.parse(line); } catch { return; }
-        if (event.type === 'final') {
-          removeLastThought(event.answer || event.message?.text || '');
-          finalData = event;
+      } finally {
+        if (activeStreamController === controller) {
+          activeStreamController = null;
+          activeStreamId = null;
         }
-        else if (event.type === 'title') {
-          if (currentConversationId === id) document.getElementById('chatTitle').textContent = event.title || '新对话';
-          const item = conversations.find(item => item.id === id);
-          if (item) item.title = event.title || item.title;
-          renderList();
-        }
-        else if (event.type === 'error') errorData = event;
-        else if (event.type === 'done') {
-          activeRunPanel?.classList.add('done');
-          if (activeRunPanel) updateRunCount(activeRunPanel);
-        }
-        else appendRunEvent(event);
-      };
-      while (true) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, {stream: true});
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        lines.forEach(consume);
       }
-      buffer += decoder.decode();
-      consume(buffer);
-      if (!finalData) {
-        const error = new Error(errorData?.text || 'Codex 没有返回最终结果');
-        error.messageData = errorData?.message || null;
-        throw error;
-      }
-      return finalData;
     }
     function addOptimisticMessage(text, images) {
       if (messageColumn.querySelector('.welcome')) messageColumn.innerHTML = '';
@@ -2004,6 +2028,7 @@
       renderPendingImages();
       setBusy(true);
       const id = currentConversationId;
+      const sendToken = ++activeSendToken;
       let keepBusy = false;
       try {
         const result = await streamMessage(id, {
@@ -2022,12 +2047,20 @@
         if (currentConversationId === id && result.conversation) document.getElementById('chatTitle').textContent = result.conversation.title || '新对话';
         await loadList();
       } catch (error) {
+        if (sendToken !== activeSendToken) return;
         if (error.status === 409) {
           try {
             keepBusy = await recoverConversationAfterConflict(id);
             showToast(keepBusy ? '上一条消息仍在处理中，已恢复监控。' : '上一条消息已经结束，请重新加载对话。');
           } catch (recoverError) {
             showToast(recoverError.message || error.message);
+          }
+        } else if (error.streamDisconnected && currentConversationId === id) {
+          try {
+            keepBusy = await recoverConversationAfterConflict(id);
+            showToast(keepBusy ? '实时连接已断开，后台仍在处理中。' : '实时连接已断开，已恢复最终结果。');
+          } catch (recoverError) {
+            showToast(`连接中断，恢复失败：${recoverError.message || error.message}`);
           }
         } else {
           if (error.messageData && currentConversationId === id) renderMessage(error.messageData, {skipRunEvents: true});
@@ -2044,8 +2077,15 @@
     let stopRequested = false;
     async function stopMessage() {
       if (!busy || stopRequested) return;
+      const id = currentConversationId;
       stopRequested = true;
       send.disabled = true;
+      activeSendToken += 1;
+      if (activeStreamController && activeStreamId === id) activeStreamController.abort();
+      // The server may need a moment to terminate Codex, but the browser UI
+      // must become usable immediately. A later refresh/409 recovery will
+      // pick up the final state if the process is still winding down.
+      setBusy(false, false);
       showToast('正在停止当前任务…');
       try {
         await request('/api/chat/stop', {
@@ -2053,10 +2093,23 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({conversationId: currentConversationId})
         });
+        if (currentConversationId === id) {
+          try {
+            const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+            conversationCache.set(id, data.conversation);
+            renderConversation(data.conversation);
+            if (data.conversation.running) startActiveRunMonitor(id);
+            else setBusy(false);
+            await loadList();
+          } catch (refreshError) {
+            showToast(`任务已请求停止，刷新状态失败：${refreshError.message}`);
+          }
+        }
       } catch (error) {
-        stopRequested = false;
-        send.disabled = false;
         showToast(error.message);
+      } finally {
+        stopRequested = false;
+        if (!busy) send.disabled = false;
       }
     }
     async function submitAuth(event) {
