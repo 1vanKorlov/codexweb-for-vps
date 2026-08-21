@@ -200,15 +200,16 @@
     .run-event-body { min-width: 0; flex: 1; }
     .run-event-label { color: #a6a6a6; font-size: 12px; margin-right: 5px; }
     .run-event-text { overflow-wrap: anywhere; white-space: pre-wrap; }
-    .run-terminal { align-items: flex-start; }
-    .run-terminal .run-event-icon { width: 22px; flex: 0 0 22px; display: grid; place-items: center; line-height: 1; }
+    .run-terminal { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 20px; align-items: center; column-gap: 6px; }
+    .run-terminal .run-event-icon { grid-column: 1; width: 22px; flex: 0 0 22px; display: grid; place-items: center; line-height: 1; margin-top: 0; }
     .run-terminal .run-event-icon svg { width: 16px; height: 16px; }
-    .run-terminal .run-event-icon,
-    .run-terminal-check { margin-top: 3px; }
-    .run-terminal .run-event-body { display: flex; align-items: flex-start; gap: 6px; }
-    .run-terminal .run-event-label { flex: 0 0 auto; margin-right: 0; white-space: nowrap; }
-    .run-terminal-check { width: 18px; flex: 0 0 18px; height: 22px; display: grid; place-items: center; color: #969696; font-size: 14px; line-height: 1; text-align: center; }
-    .run-terminal-details { min-width: 0; flex: 1; }
+    .run-terminal .run-event-body { display: contents; }
+    .run-terminal .run-event-label { grid-column: 3; margin-right: 0; white-space: nowrap; align-self: center; }
+    .run-terminal-check { grid-column: 4; width: 20px; flex: 0 0 20px; height: 24px; display: grid; place-items: center; margin-top: 0; color: #969696; font-size: 15px; line-height: 1; text-align: center; }
+    .run-terminal[data-status="completed"] .run-terminal-check { color: #35b779; }
+    .run-terminal[data-status="error"] .run-terminal-check,
+    .run-terminal[data-status="error"] .run-event-label { color: #e0525f; }
+    .run-terminal-details { grid-column: 2; min-width: 0; }
     .run-event-command { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border: 1px solid #3a3a3a; border-radius: 5px; background: #0b0b0b; color: #d2d2d2; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; cursor: pointer; }
     .run-terminal-details[open] .run-event-command { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; }
     .run-terminal[data-status="running"] .run-event-label,
@@ -1783,7 +1784,9 @@
       const label = row.querySelector('.run-event-label');
       const check = row.querySelector('.run-terminal-check');
       const details = row.querySelector('.run-terminal-details');
-      row.dataset.status = event.type === 'tool_completed' ? 'completed' : 'running';
+      row.dataset.status = event.type === 'tool_completed'
+        ? (event.exitCode === 0 ? 'completed' : 'error')
+        : 'running';
       icon.innerHTML = terminalIconMarkup();
       if (event.type === 'tool_completed') {
         label.textContent = event.exitCode === 0 ? '' : '失败';
