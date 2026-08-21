@@ -13,7 +13,7 @@
 - HTTPS 本机监听：`127.0.0.1:8443`
 - 公网入口：`codex-tls-router.service` 监听 `0.0.0.0:443`
 
-公网域名的 DNS A 记录指向 `107.175.126.28`。`codex4web.me` 使用 Let’s Encrypt 正式证书，证书由 acme.sh 自动续期；公网访问不需要先连接服务器梯子。
+公网域名的 DNS A 记录指向当前新 VPS `192.236.214.144`。`codex4web.me` 使用 Let’s Encrypt 正式证书，证书由 acme.sh 自动续期；公网访问不需要先连接服务器梯子。
 
 ## 2. 服务组成
 
@@ -36,6 +36,7 @@
 | 文件/目录 | 内容 |
 |---|---|
 | `conversations.json` | 全部账号的对话、助手最终回答、压缩后的过程事件和图片元数据 |
+| `runs.json` | 运行任务的 ID、状态和断线恢复所需的压缩过程事件；服务重启后会把未完成任务标记为中断 |
 | `users.json` | 用户名、角色、密码盐值和密码哈希；不保存明文密码 |
 | `sessions.json` | “自动登录”持久会话的哈希和过期时间 |
 | `registration-keys.json` | 管理员生成的一次性注册密钥 |
@@ -85,7 +86,11 @@
 - 不同对话、不同用户可以并行运行；运行任务保存在后端 `activeRuns` Map 中。
 - `/api/chat/stop` 按对话 ID停止对应任务。
 - 前端通过 `/api/chat/stream` 接收过程事件，任务结束后保存最终回答和压缩后的过程记录。
+- Codex 单个任务最长运行 60 分钟；流连接本身有心跳，断线后不影响后台任务。
 - 网络错误或 Codex 异常也会保存为错误消息，刷新后不会凭空消失。
+- 流式连接断开后，Codex 子进程仍会继续运行；前端会在重新显示页面、网络恢复或重新打开对话时轮询任务状态并恢复过程/最终消息。
+- 服务端每 15 秒发送一次流心跳；运行任务的状态和过程事件会同步写入 `runs.json`，服务重启造成的未完成任务会显示为明确的中断消息。
+- 历史对话默认不加载完整终端/工具过程：对话接口只返回正文、事件数量和文件变更摘要；用户点击过程折叠栏时，前端才按消息请求并分批渲染完整事件，避免大对话首次打开卡顿。
 
 服务器只有 1 vCPU、约 1G 内存。虽然代码支持并行，但不建议同时运行多个大型任务；并行任务过多会抢占内存并使用 Swap。
 
@@ -114,7 +119,9 @@
 | `POST /api/auth/logout` | 注销当前会话 |
 | `GET /api/conversations` | 获取当前用户的对话列表 |
 | `POST /api/conversations` | 创建对话 |
-| `GET /api/conversations/:id` | 读取对话及历史过程 |
+| `GET /api/conversations/:id` | 读取对话正文、过程摘要和文件变更摘要 |
+| `GET /api/conversations/:id/run-events/:messageId` | 按需读取某条助手消息的完整过程事件 |
+| `GET /api/conversations/:id/run` | 轻量读取运行状态和增量过程事件 |
 | `PATCH /api/conversations/:id/settings` | 保存模型和推理强度 |
 | `POST /api/conversations/:id/branch` | 创建分支 |
 | `DELETE /api/conversations/:id` | 删除当前用户的对话和附件 |
@@ -131,7 +138,7 @@
 公网 443 同时承担 Codex Web 和 VLESS Reality：
 
 ```text
-客户端 -> 107.175.126.28:443 -> codex-tls-router
+客户端 -> 192.236.214.144:443 -> codex-tls-router
   SNI=codex4web.me/codex.internal -> 127.0.0.1:8443 -> Codex Web
   其他 SNI                         -> 127.0.0.1:9443 -> Xray
 ```

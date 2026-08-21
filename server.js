@@ -14,9 +14,12 @@ const HTTPS_CERT_FILE = process.env.CODEX_WEB_HTTPS_CERT || '/etc/codex-web/tls/
 const HTTPS_CA_FILE = process.env.CODEX_WEB_HTTPS_CA || '/etc/codex-web/tls/ca.crt';
 const HTTPS_CA_DER_FILE = process.env.CODEX_WEB_HTTPS_CA_DER || '/etc/codex-web/tls/ca.cer';
 const BASE_PATH = (process.env.CODEX_WEB_PATH || '/codex').replace(/\/$/, '');
+const CLASH_CONFIG_FILE = process.env.CODEX_WEB_CLASH_CONFIG || '/root/clash-meta.yaml';
+const SUBSCRIPTION_PATH = (process.env.CODEX_WEB_SUBSCRIPTION_PATH || '').replace(/\/$/, '');
 const DATA_DIR = process.env.CODEX_WEB_DATA || '/var/lib/codex-web';
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const STORE_FILE = path.join(DATA_DIR, 'conversations.json');
+const RUNS_FILE = path.join(DATA_DIR, 'runs.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const REGISTRATION_KEY_FILE = path.join(DATA_DIR, 'registration.key');
@@ -34,7 +37,12 @@ const MAX_TOTAL_IMAGE_BYTES = 24 * 1024 * 1024;
 const MAX_RUN_EVENTS = 300;
 const MAX_RUN_OUTPUT_CHARS = 24000;
 const MAX_RUN_STORAGE_BYTES = 512 * 1024;
+const MAX_PERSISTED_RUNS = 32;
+const RUN_PERSIST_DELAY_MS = 250;
 const MAX_FILE_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+// Keep the Codex process alive for up to one hour. The browser stream is
+// recoverable, so losing the phone connection must not cancel this timer.
+const CODEX_TIMEOUT_MS = 60 * 60 * 1000;
 const SNAPSHOT_SKIP_DIRS = new Set([
   '.codex', '.vscode-server', '.cache', '.npm', '.local', '.dotnet', '.copilot', '.ssh',
   '.git', 'node_modules', '__pycache__'
@@ -120,6 +128,8 @@ let conversations = loadConversations();
 // A conversation may have at most one active turn, but different
 // conversations (and different users) can run at the same time.
 const activeRuns = new Map();
+const runRecords = loadRunRecords();
+let runPersistTimer = null;
 let users = loadUsers();
 const sessions = loadSessions();
 const authAttempts = new Map();
@@ -132,6 +142,77 @@ function persist() {
   const temporary = `${STORE_FILE}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(conversations, null, 2), { mode: 0o600 });
   fs.renameSync(temporary, STORE_FILE);
+}
+
+function loadRunRecords() {
+  const records = new Map();
+  try {
+    const saved = JSON.parse(fs.readFileSync(RUNS_FILE, 'utf8'));
+    const list = Array.isArray(saved) ? saved : saved?.runs;
+    if (!Array.isArray(list)) return records;
+    for (const item of list) {
+      if (!item?.id || !item.conversationId) continue;
+      records.set(item.conversationId, {
+        id: String(item.id),
+        conversationId: String(item.conversationId),
+        status: String(item.status || 'running'),
+        startedAt: item.startedAt || now(),
+        updatedAt: item.updatedAt || item.startedAt || now(),
+        clientDisconnected: Boolean(item.clientDisconnected),
+        userMessageId: item.userMessageId || null,
+        assistantMessageId: item.assistantMessageId || null,
+        errorMessageId: item.errorMessageId || null,
+        errorText: item.errorText || '',
+        events: Array.isArray(item.events) ? item.events.slice(0, MAX_RUN_EVENTS) : []
+      });
+    }
+  } catch {}
+  return records;
+}
+
+function serializableRun(run) {
+  return {
+    id: String(run.runId || run.id || crypto.randomUUID()),
+    conversationId: String(run.conversationId || ''),
+    status: run.status || 'running',
+    startedAt: run.startedAt || now(),
+    updatedAt: run.updatedAt || now(),
+    clientDisconnected: Boolean(run.clientDisconnected),
+    userMessageId: run.userMessageId || null,
+    assistantMessageId: run.assistantMessageId || null,
+    errorMessageId: run.errorMessageId || null,
+    errorText: run.errorText || '',
+    events: Array.isArray(run.events) ? run.events.slice(0, MAX_RUN_EVENTS) : []
+  };
+}
+
+function flushRunRecords() {
+  if (runPersistTimer) {
+    clearTimeout(runPersistTimer);
+    runPersistTimer = null;
+  }
+  const records = [...runRecords.values()]
+    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
+    .slice(0, MAX_PERSISTED_RUNS);
+  const temporary = `${RUNS_FILE}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(records, null, 2), { mode: 0o600 });
+  fs.renameSync(temporary, RUNS_FILE);
+  try { fs.chmodSync(RUNS_FILE, 0o600); } catch {}
+}
+
+function persistRun(run, immediate = false) {
+  if (!run?.conversationId) return;
+  runRecords.set(run.conversationId, serializableRun(run));
+  if (immediate) {
+    flushRunRecords();
+    return;
+  }
+  if (runPersistTimer) return;
+  runPersistTimer = setTimeout(() => {
+    runPersistTimer = null;
+    try { flushRunRecords(); } catch {}
+  }, RUN_PERSIST_DELAY_MS);
+  runPersistTimer.unref?.();
 }
 
 function loadUsers() {
@@ -491,7 +572,121 @@ function compactRunEvent(event) {
   return saved;
 }
 
-function publicMessage(message) {
+function createRunState(runKey) {
+  return {
+    runId: crypto.randomUUID(),
+    conversationId: runKey,
+    status: 'running',
+    startedAt: now(),
+    updatedAt: now(),
+    clientDisconnected: false,
+    userMessageId: null,
+    assistantMessageId: null,
+    errorMessageId: null,
+    errorText: '',
+    events: [],
+    eventBytes: 0,
+    child: null,
+    cancelled: false,
+    finalized: false,
+    stop() {
+      if (this.cancelled || this.finalized) return;
+      this.cancelled = true;
+      this.status = 'stopping';
+      this.updatedAt = now();
+      persistRun(this, true);
+      terminateChild(this.child);
+      setTimeout(() => terminateChild(this.child, 'SIGKILL'), 3000).unref();
+    }
+  };
+}
+
+function rememberRunEventOnRun(run, event) {
+  if (!run) return null;
+  run.updatedAt = now();
+  const saved = compactRunEvent(event);
+  if (!saved) return null;
+  const size = Buffer.byteLength(JSON.stringify(saved));
+  if (run.events.length < MAX_RUN_EVENTS && run.eventBytes + size <= MAX_RUN_STORAGE_BYTES) {
+    run.events.push(saved);
+    run.eventBytes += size;
+  }
+  persistRun(run);
+  return saved;
+}
+
+function publicRun(run, after = 0) {
+  if (!run) return null;
+  const allEvents = Array.isArray(run.events) ? run.events : [];
+  const offset = Math.max(0, Math.min(Number.isFinite(after) ? Math.floor(after) : 0, allEvents.length));
+  return {
+    id: run.runId || run.id,
+    status: run.status || 'running',
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    clientDisconnected: Boolean(run.clientDisconnected),
+    eventCount: allEvents.length,
+    events: allEvents.slice(offset)
+  };
+}
+
+function releaseRun(runKey, run, status = 'completed') {
+  if (!run) return;
+  run.status = status;
+  run.updatedAt = now();
+  run.finalized = true;
+  if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+  persistRun(run, true);
+}
+
+function storedRunData(value) {
+  if (value && typeof value === 'object') return value;
+  if (typeof value !== 'string') return {};
+  try { return JSON.parse(value); } catch { return {}; }
+}
+
+function publicFileChangeEvents(message) {
+  const events = Array.isArray(message?.runEvents) ? message.runEvents : [];
+  return events
+    .filter(event => event?.type === 'file_change')
+    .map(event => {
+      const root = storedRunData(event.data);
+      const rawChanges = Array.isArray(root.changes)
+        ? root.changes
+        : (Array.isArray(root.files) ? root.files : []);
+      const changes = rawChanges.map(change => {
+        const item = change && typeof change === 'object' ? change : {};
+        const pathText = String(item.path || item.file_path || item.filename || item.file || root.path || root.file_path || '');
+        const result = {
+          path: pathText,
+          kind: String(item.kind || root.kind || 'update').toLowerCase()
+        };
+        for (const [target, source] of [
+          ['additions', 'additions'], ['deletions', 'deletions'],
+          ['additions', 'added'], ['deletions', 'deleted'],
+          ['additions', 'added_lines'], ['deletions', 'removed_lines']
+        ]) {
+          if (result[target] !== undefined) continue;
+          const value = Number(item[source]);
+          if (Number.isFinite(value)) result[target] = value;
+        }
+        return result;
+      }).filter(item => item.path);
+      return {
+        type: 'file_change',
+        itemId: event.itemId,
+        data: {
+          id: root.id || event.itemId,
+          type: 'file_change',
+          status: root.status,
+          changes
+        }
+      };
+    });
+}
+
+function publicMessage(message, { includeRunEvents = false } = {}) {
+  const runEvents = Array.isArray(message.runEvents) ? message.runEvents : [];
   const result = {
     id: message.id,
     role: message.role,
@@ -500,7 +695,11 @@ function publicMessage(message) {
     error: Boolean(message.error),
     images: (message.images || []).map(publicImage)
   };
-  if (Array.isArray(message.runEvents) && message.runEvents.length) result.runEvents = message.runEvents;
+  if (runEvents.length) {
+    result.runEventCount = runEvents.length;
+    result.fileChangeEvents = publicFileChangeEvents(message);
+    if (includeRunEvents) result.runEvents = runEvents;
+  }
   return result;
 }
 
@@ -522,8 +721,60 @@ function saveErrorMessage(conversation, text, runEvents = []) {
   return message;
 }
 
+function recoverInterruptedRuns() {
+  let conversationsChanged = false;
+  let recordsChanged = false;
+  for (const [conversationId, record] of runRecords) {
+    if (!['running', 'stopping'].includes(record.status)) continue;
+    const conversation = conversations.find(item => item.id === conversationId);
+    if (!conversation) {
+      runRecords.delete(conversationId);
+      recordsChanged = true;
+      continue;
+    }
+    const userIndex = conversation.messages.findIndex(item => item.id === record.userMessageId);
+    const assistantMessage = userIndex >= 0
+      ? conversation.messages.slice(userIndex + 1).find(item => item.role === 'assistant')
+      : null;
+    if (assistantMessage) {
+      record.assistantMessageId = assistantMessage.id;
+      record.status = 'completed';
+    } else if (userIndex >= 0) {
+      const errorText = '服务在任务完成前重启，原任务已中断，请重新发送。';
+      conversation.messages.push({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        text: errorText,
+        images: [],
+        error: true,
+        runId: record.id,
+        createdAt: now(),
+        runEvents: record.events.slice(0, MAX_RUN_EVENTS)
+      });
+      conversation.updatedAt = now();
+      record.status = 'interrupted';
+      record.errorText = errorText;
+      conversationsChanged = true;
+    } else {
+      record.status = 'interrupted';
+      record.errorText = '服务在任务开始前重启，原任务已中断。';
+    }
+    record.updatedAt = now();
+    recordsChanged = true;
+  }
+  if (conversationsChanged) {
+    sortConversations();
+    persist();
+  }
+  if (recordsChanged) {
+    try { flushRunRecords(); } catch {}
+  }
+}
+
 function publicConversation(conversation) {
   const settings = ensureSettings(conversation);
+  const liveRun = activeRuns.get(conversation.id);
+  const storedRun = runRecords.get(conversation.id);
   return {
     id: conversation.id,
     title: conversation.title,
@@ -531,10 +782,13 @@ function publicConversation(conversation) {
     reasoningEffort: settings.reasoningEffort,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
-    running: activeRuns.has(conversation.id),
+    running: Boolean(liveRun),
+    run: publicRun(liveRun || (storedRun?.status === 'interrupted' ? storedRun : null)),
     messages: conversation.messages.map(publicMessage)
   };
 }
+
+recoverInterruptedRuns();
 
 function conversationSummary(conversation) {
   const last = conversation.messages[conversation.messages.length - 1];
@@ -658,37 +912,40 @@ function runCodex(prompt, images, settings, options = {}) {
     const child = spawn('/usr/local/bin/codex', args, {
       cwd: '/root',
       env: { ...process.env, TERM: 'dumb' },
-      stdio: ['pipe', 'ignore', 'pipe']
+      stdio: ['pipe', 'ignore', 'pipe'],
+      detached: true
     });
-    const run = {
-      child,
-      cancelled: false,
-      stop() {
-        if (this.cancelled) return;
-        this.cancelled = true;
-        terminateChild(this.child);
-        setTimeout(() => terminateChild(this.child, 'SIGKILL'), 3000).unref();
-      }
+    const run = options.runState || createRunState(runKey);
+    run.child = child;
+    run.stop = function stop() {
+      if (this.cancelled || this.finalized) return;
+      this.cancelled = true;
+      this.status = 'stopping';
+      this.updatedAt = now();
+      persistRun(this, true);
+      terminateChild(this.child);
+      setTimeout(() => terminateChild(this.child, 'SIGKILL'), 3000).unref();
     };
     activeRuns.set(runKey, run);
     let stderr = '';
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-    }, 240000);
+      terminateChild(child);
+      setTimeout(() => terminateChild(child, 'SIGKILL'), 3000).unref();
+    }, CODEX_TIMEOUT_MS);
     child.stderr.on('data', chunk => {
       stderr += chunk.toString();
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
     });
     child.on('error', error => {
       clearTimeout(timer);
-      if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+      run.updatedAt = now();
       reject(error);
     });
     child.on('close', code => {
       clearTimeout(timer);
-      if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+      run.updatedAt = now();
       let answer = '';
       try { answer = fs.readFileSync(output, 'utf8').trim(); } catch {}
       try { fs.unlinkSync(output); } catch {}
@@ -703,9 +960,13 @@ function runCodex(prompt, images, settings, options = {}) {
 }
 
 function emitStreamEvent(res, event) {
-  if (!res.writableEnded && !res.destroyed) {
-    res.write(`${JSON.stringify(event)}\n`);
-  }
+  if (res.writableEnded || res.destroyed) return;
+  try { res.write(`${JSON.stringify(event)}\n`); } catch {}
+}
+
+function endStreamResponse(res) {
+  if (res.writableEnded || res.destroyed) return;
+  try { res.end(); } catch {}
 }
 
 function processItemEvent(phase, item) {
@@ -886,16 +1147,17 @@ function runCodexStream(prompt, images, settings, onEvent, options = {}) {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: true
     });
-    const run = {
-      child,
-      cancelled: false,
-      stop() {
-        if (this.cancelled) return;
-        this.cancelled = true;
-        onEvent({ type: 'status', text: '正在停止' });
-        terminateChild(this.child);
-        setTimeout(() => terminateChild(this.child, 'SIGKILL'), 3000).unref();
-      }
+    const run = options.runState || createRunState(runKey);
+    run.child = child;
+    run.stop = function stop() {
+      if (this.cancelled || this.finalized) return;
+      this.cancelled = true;
+      this.status = 'stopping';
+      this.updatedAt = now();
+      persistRun(this, true);
+      onEvent({ type: 'status', text: '正在停止' });
+      terminateChild(this.child);
+      setTimeout(() => terminateChild(this.child, 'SIGKILL'), 3000).unref();
     };
     activeRuns.set(runKey, run);
     let buffer = '';
@@ -904,6 +1166,7 @@ function runCodexStream(prompt, images, settings, onEvent, options = {}) {
     // and then writes it to the output file. Hold the latest one back so the
     // live process panel does not briefly show the same answer twice.
     let pendingAgentMessage = null;
+    let lastAgentMessage = '';
     const flushPendingAgentMessage = () => {
       if (!pendingAgentMessage) return;
       onEvent(pendingAgentMessage);
@@ -914,7 +1177,8 @@ function runCodexStream(prompt, images, settings, onEvent, options = {}) {
     const timer = setTimeout(() => {
       timedOut = true;
       terminateChild(child);
-    }, 240000);
+      setTimeout(() => terminateChild(child, 'SIGKILL'), 3000).unref();
+    }, CODEX_TIMEOUT_MS);
 
     const handleLine = line => {
       if (!line.trim()) return;
@@ -942,6 +1206,7 @@ function runCodexStream(prompt, images, settings, onEvent, options = {}) {
         if (itemEvent.type === 'thought' && itemEvent.text) {
           flushPendingAgentMessage();
           pendingAgentMessage = itemEvent;
+          lastAgentMessage = itemEvent.text;
         } else {
           flushPendingAgentMessage();
           onEvent(itemEvent);
@@ -980,13 +1245,13 @@ function runCodexStream(prompt, images, settings, onEvent, options = {}) {
     });
     child.on('error', error => {
       clearTimeout(timer);
-      if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+      run.updatedAt = now();
       try { fs.unlinkSync(output); } catch {}
       reject(error);
     });
     child.on('close', code => {
       clearTimeout(timer);
-      if (activeRuns.get(runKey) === run) activeRuns.delete(runKey);
+      run.updatedAt = now();
       if (buffer.trim()) handleLine(buffer);
       let answer = '';
       try { answer = fs.readFileSync(output, 'utf8').trim(); } catch {}
@@ -1052,6 +1317,18 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = requestUrl.pathname.replace(/\/$/, '') || '/';
   const api = `${BASE_PATH}/api`;
+
+  if (SUBSCRIPTION_PATH && pathname === SUBSCRIPTION_PATH && req.method === 'GET') {
+    try {
+      return send(res, 200, 'text/yaml; charset=utf-8', fs.readFileSync(CLASH_CONFIG_FILE), {
+        'Content-Disposition': 'inline; filename=codex4web.yaml',
+        'profile-title': 'codex4web',
+        'Cache-Control': 'no-store'
+      });
+    } catch {
+      return send(res, 503, 'text/plain; charset=utf-8', 'Subscription temporarily unavailable');
+    }
+  }
 
   if (pathname === BASE_PATH || pathname === `${BASE_PATH}/index.html`) {
     return send(res, 200, 'text/html; charset=utf-8', HTML.replaceAll('__CODEX_BASE__', BASE_PATH));
@@ -1269,9 +1546,19 @@ const server = http.createServer(async (req, res) => {
   const conversationPath = `${api}/conversations/`;
   if (pathname.startsWith(conversationPath)) {
     const tail = decodeURIComponent(pathname.slice(conversationPath.length));
-    const [id, subpath] = tail.split('/');
+    const [id, subpath, resourceId] = tail.split('/');
     const conversation = findConversation(id, authUser);
     if (!conversation) return json(res, 404, { error: '对话不存在。' });
+    if (subpath === 'run-events' && req.method === 'GET') {
+      const messageId = resourceId || '';
+      const message = conversation.messages.find(item => item.id === messageId);
+      if (!message) return json(res, 404, { error: '消息不存在。' });
+      return json(res, 200, {
+        messageId,
+        eventCount: Array.isArray(message.runEvents) ? message.runEvents.length : 0,
+        events: Array.isArray(message.runEvents) ? message.runEvents : []
+      });
+    }
     if (subpath === 'settings' && req.method === 'PATCH') {
       try {
         const body = JSON.parse(await readBody(req));
@@ -1293,6 +1580,15 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return json(res, 400, { error: error.message || '创建分支失败。' });
       }
+    }
+    if (subpath === 'run' && req.method === 'GET') {
+      const liveRun = activeRuns.get(id);
+      const afterValue = Number(requestUrl.searchParams.get('after'));
+      const after = Number.isFinite(afterValue) && afterValue >= 0 ? afterValue : 0;
+      return json(res, 200, {
+        running: Boolean(liveRun),
+        run: liveRun ? publicRun(liveRun, after) : null
+      });
     }
     if (subpath) return json(res, 404, { error: '对话接口不存在。' });
     if (req.method === 'GET') return json(res, 200, { conversation: publicConversation(conversation) });
@@ -1316,27 +1612,26 @@ const server = http.createServer(async (req, res) => {
   if (pathname === `${api}/chat/stream` && req.method === 'POST') {
     let headersSent = false;
     let conversation = null;
-    const runEvents = [];
-    let runEventBytes = 0;
+    let runKey = '';
+    let runState = null;
+    let heartbeatTimer = null;
     const rememberRunEvent = event => {
-      const saved = compactRunEvent(event);
-      if (saved && runEvents.length < MAX_RUN_EVENTS) {
-        const size = Buffer.byteLength(JSON.stringify(saved));
-        if (runEventBytes + size <= MAX_RUN_STORAGE_BYTES) {
-          runEvents.push(saved);
-          runEventBytes += size;
-        }
-      }
+      if (runState) rememberRunEventOnRun(runState, event);
     };
     const emitAndRemember = event => {
       rememberRunEvent(event);
       emitStreamEvent(res, event);
     };
+    const stopHeartbeat = () => {
+      if (!heartbeatTimer) return;
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    };
     try {
       const body = JSON.parse(await readBody(req));
       conversation = findConversation(typeof body.conversationId === 'string' ? body.conversationId : '', authUser);
       if (!conversation) return json(res, 404, { error: '对话不存在，请新建一个对话。' });
-      const runKey = conversation.id;
+      runKey = conversation.id;
       if (activeRuns.has(runKey)) return json(res, 409, { error: '这个对话的上一条消息还在处理中，请稍等。' });
       if (body.model || body.reasoningEffort) {
         const settings = normalizeSettings(body.model || conversation.model, body.reasoningEffort || conversation.reasoningEffort);
@@ -1364,6 +1659,11 @@ const server = http.createServer(async (req, res) => {
       conversation.updatedAt = now();
       persist();
 
+      runState = createRunState(runKey);
+      runState.userMessageId = userMessage.id;
+      activeRuns.set(runKey, runState);
+      persistRun(runState, true);
+
       res.writeHead(200, {
         'Content-Type': 'application/x-ndjson; charset=utf-8',
         'Cache-Control': 'no-cache, no-store',
@@ -1371,35 +1671,61 @@ const server = http.createServer(async (req, res) => {
         'X-Accel-Buffering': 'no'
       });
       headersSent = true;
-      emitStreamEvent(res, { type: 'accepted', messageId: userMessage.id });
+      res.on('close', () => {
+        if (runState && !res.writableEnded) {
+          runState.clientDisconnected = true;
+          runState.updatedAt = now();
+          persistRun(runState);
+        }
+        stopHeartbeat();
+      });
+      res.on('error', () => {
+        if (runState && !res.writableEnded) {
+          runState.clientDisconnected = true;
+          runState.updatedAt = now();
+          persistRun(runState);
+        }
+      });
+      heartbeatTimer = setInterval(() => emitStreamEvent(res, { type: 'heartbeat', at: Date.now() }), 15000);
+      heartbeatTimer.unref?.();
+      emitStreamEvent(res, { type: 'accepted', messageId: userMessage.id, runId: runState.runId });
       emitAndRemember({ type: 'status', text: '正在启动 Codex' });
 
       const contextImages = conversation.messages
         .slice(-10)
         .flatMap(item => item.images || [])
         .slice(-6);
-      const result = await runCodexStream(prompt, contextImages, settings, emitAndRemember, { readOnly, runKey });
+      const result = await runCodexStream(prompt, contextImages, settings, emitAndRemember, { readOnly, runKey, runState });
       const assistantMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
         text: result.answer,
         images: [],
         createdAt: now(),
-        runEvents: runEvents.slice(0, MAX_RUN_EVENTS)
+        runEvents: (runState?.events || []).slice(0, MAX_RUN_EVENTS)
       };
       conversation.messages.push(assistantMessage);
       conversation.updatedAt = now();
       sortConversations();
+      runState.assistantMessageId = assistantMessage.id;
       persist();
+      releaseRun(runKey, runState, 'completed');
       emitStreamEvent(res, { type: 'final', answer: result.answer, message: publicMessage(assistantMessage), conversation: conversationSummary(conversation) });
       emitStreamEvent(res, { type: 'done' });
-      res.end();
+      stopHeartbeat();
+      endStreamResponse(res);
       return;
     } catch (error) {
       const errorText = error.message || 'Codex 执行失败。';
       const errorEvent = { type: 'error', text: errorText };
       rememberRunEvent(errorEvent);
-      const errorMessage = saveErrorMessage(conversation, errorText, runEvents);
+      const errorMessage = saveErrorMessage(conversation, errorText, runState?.events || []);
+      if (runState && errorMessage) {
+        runState.errorMessageId = errorMessage.id;
+        runState.errorText = errorText;
+      }
+      releaseRun(runKey, runState, 'failed');
+      stopHeartbeat();
       if (!headersSent) return json(res, 500, { error: errorText, message: errorMessage ? publicMessage(errorMessage) : null });
       emitStreamEvent(res, {
         ...errorEvent,
@@ -1408,7 +1734,8 @@ const server = http.createServer(async (req, res) => {
         conversation: conversation ? conversationSummary(conversation) : null
       });
       emitStreamEvent(res, { type: 'done' });
-      return res.end();
+      endStreamResponse(res);
+      return;
     }
   }
 
@@ -1436,11 +1763,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === `${api}/chat` && req.method === 'POST') {
+    let runKey = '';
+    let runState = null;
+    let conversation = null;
     try {
       const body = JSON.parse(await readBody(req));
-      const conversation = findConversation(typeof body.conversationId === 'string' ? body.conversationId : '', authUser);
+      conversation = findConversation(typeof body.conversationId === 'string' ? body.conversationId : '', authUser);
       if (!conversation) return json(res, 404, { error: '对话不存在，请新建一个对话。' });
-      const runKey = conversation.id;
+      runKey = conversation.id;
       if (activeRuns.has(runKey)) return json(res, 409, { error: '这个对话的上一条消息还在处理中，请稍等。' });
       if (body.model || body.reasoningEffort) {
         const settings = normalizeSettings(body.model || conversation.model, body.reasoningEffort || conversation.reasoningEffort);
@@ -1468,11 +1798,15 @@ const server = http.createServer(async (req, res) => {
       conversation.updatedAt = now();
       persist();
 
+      runState = createRunState(runKey);
+      runState.userMessageId = userMessage.id;
+      activeRuns.set(runKey, runState);
+      persistRun(runState, true);
       const contextImages = conversation.messages
         .slice(-10)
         .flatMap(item => item.images || [])
         .slice(-6);
-      const answer = await runCodex(prompt, contextImages, settings, { readOnly, runKey });
+      const answer = await runCodex(prompt, contextImages, settings, { readOnly, runKey, runState });
       const assistantMessage = {
         id: crypto.randomUUID(),
         role: 'assistant',
@@ -1483,15 +1817,31 @@ const server = http.createServer(async (req, res) => {
       conversation.messages.push(assistantMessage);
       conversation.updatedAt = now();
       sortConversations();
+      runState.assistantMessageId = assistantMessage.id;
       persist();
+      releaseRun(runKey, runState, 'completed');
       return json(res, 200, { answer, message: publicMessage(assistantMessage), conversation: conversationSummary(conversation) });
     } catch (error) {
-      return json(res, 500, { error: error.message || 'Codex 执行失败。' });
+      const errorText = error.message || 'Codex 执行失败。';
+      const errorMessage = saveErrorMessage(conversation, errorText, runState?.events || []);
+      if (runState && errorMessage) {
+        runState.errorMessageId = errorMessage.id;
+        runState.errorText = errorText;
+      }
+      releaseRun(runKey, runState, 'failed');
+      return json(res, 500, { error: errorText, message: errorMessage ? publicMessage(errorMessage) : null });
     }
   }
 
   send(res, 404, 'text/plain; charset=utf-8', 'Not found');
 });
+
+// Node's request timeout is for receiving the request body, but making the
+// long-running behavior explicit avoids a future runtime default terminating
+// a quiet fallback request. The stream itself is kept alive by heartbeats.
+server.requestTimeout = 0;
+server.timeout = 0;
+server.headersTimeout = 0;
 
 server.listen(PORT, HOST, () => {
   console.log(`Codex web UI listening on http://${HOST}:${PORT}${BASE_PATH}/`);
@@ -1502,6 +1852,9 @@ if (fs.existsSync(HTTPS_KEY_FILE) && fs.existsSync(HTTPS_CERT_FILE)) {
     key: fs.readFileSync(HTTPS_KEY_FILE),
     cert: fs.readFileSync(HTTPS_CERT_FILE)
   }, server.listeners('request')[0]);
+  httpsServer.requestTimeout = 0;
+  httpsServer.timeout = 0;
+  httpsServer.headersTimeout = 0;
   httpsServer.listen(HTTPS_PORT, HOST, () => {
     console.log(`Codex web UI listening on https://${HOST}:${HTTPS_PORT}${BASE_PATH}/`);
   });
