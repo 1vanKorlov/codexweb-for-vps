@@ -794,6 +794,10 @@
     const authSwitch = document.getElementById('authSwitch');
     let conversations = [];
     const conversationCache = new Map();
+    // Keep the progress of a live turn separately from the rendered DOM. A
+    // conversation can be left and reopened while its Codex process keeps
+    // running, so the already received events should be reusable immediately.
+    const liveRunCache = new Map();
     let modelCatalog = [];
     let currentSettings = {model: '', reasoningEffort: ''};
     let currentConversationId = null;
@@ -1262,7 +1266,11 @@
       const previousScrollBehavior = messages.style.scrollBehavior;
       messages.style.scrollBehavior = 'auto';
       activeConversationData = conversation;
-      setConversationRunning(conversation.id, Boolean(conversation.running));
+      const conversationRunning = Boolean(conversation.running || hasLiveRunCache(conversation.id));
+      const recoveredRun = conversationRunning
+        ? (conversation.run ? cacheLiveRun(conversation.id, conversation.run) : getLiveRunSnapshot(conversation.id))
+        : null;
+      setConversationRunning(conversation.id, conversationRunning);
       document.getElementById('chatTitle').textContent = conversation.title || '新对话';
       setCurrentSettings(conversation);
       updateDesktopRail(conversation);
@@ -1273,6 +1281,7 @@
       activeRunPlaceholderShown = false;
       if (!conversation.messages?.length) renderWelcome();
       else conversation.messages.forEach(renderMessage);
+      if (recoveredRun) renderRecoveredRun(recoveredRun, {delta: false});
       const userMessages = messageColumn.querySelectorAll('.message.user');
       const lastUserMessage = userMessages[userMessages.length - 1];
       const targetTop = lastUserMessage
@@ -1281,6 +1290,93 @@
       messages.scrollTop = Math.max(0, targetTop - 18);
       refreshTerminalDrawer();
       requestAnimationFrame(() => { messages.style.scrollBehavior = previousScrollBehavior; });
+    }
+    function beginLiveRunCache(id) {
+      if (!id) return;
+      const timestamp = new Date().toISOString();
+      liveRunCache.set(id, {
+        runId: null,
+        status: 'running',
+        startedAt: timestamp,
+        updatedAt: timestamp,
+        events: []
+      });
+    }
+    function markLiveRunStarted(id, runId) {
+      if (!id) return;
+      let entry = liveRunCache.get(id);
+      if (!entry) {
+        beginLiveRunCache(id);
+        entry = liveRunCache.get(id);
+      }
+      if (runId) entry.runId = String(runId);
+      entry.status = 'running';
+      entry.updatedAt = new Date().toISOString();
+    }
+    function cacheLiveRunEvent(id, event) {
+      if (!id || !event || ['heartbeat', 'accepted', 'thread', 'final', 'done'].includes(event.type)) return;
+      let entry = liveRunCache.get(id);
+      if (!entry) {
+        beginLiveRunCache(id);
+        entry = liveRunCache.get(id);
+      }
+      if (entry.events.length < 300) entry.events.push(event);
+      entry.updatedAt = new Date().toISOString();
+    }
+    function cacheLiveRun(id, run, options = {}) {
+      if (!id || !run) return null;
+      const runId = run.id || run.runId || '';
+      const normalizedRunId = runId ? String(runId) : '';
+      let entry = liveRunCache.get(id);
+      const replace = !entry
+        || (normalizedRunId && entry.runId && entry.runId !== normalizedRunId)
+        || (!options.delta && normalizedRunId && !entry.runId);
+      if (replace) {
+        entry = {
+          runId: normalizedRunId || null,
+          status: run.status || 'running',
+          startedAt: run.startedAt || new Date().toISOString(),
+          updatedAt: run.updatedAt || new Date().toISOString(),
+          events: []
+        };
+        liveRunCache.set(id, entry);
+      }
+      if (normalizedRunId) entry.runId = normalizedRunId;
+      if (run.status) entry.status = run.status;
+      if (run.startedAt) entry.startedAt = run.startedAt;
+      if (run.updatedAt) entry.updatedAt = run.updatedAt;
+      const events = Array.isArray(run.events) ? run.events : [];
+      if (options.delta) {
+        events.slice(0, Math.max(0, 300 - entry.events.length)).forEach(event => entry.events.push(event));
+      } else {
+        entry.events = events.slice(0, 300);
+      }
+      return {
+        id: entry.runId || 'unknown',
+        status: entry.status,
+        startedAt: entry.startedAt,
+        updatedAt: entry.updatedAt,
+        eventCount: entry.events.length,
+        events: entry.events.slice()
+      };
+    }
+    function getLiveRunSnapshot(id) {
+      const entry = liveRunCache.get(id);
+      if (!entry) return null;
+      return {
+        id: entry.runId || 'unknown',
+        status: entry.status,
+        startedAt: entry.startedAt,
+        updatedAt: entry.updatedAt,
+        eventCount: entry.events.length,
+        events: entry.events.slice()
+      };
+    }
+    function hasLiveRunCache(id) {
+      return Boolean(liveRunCache.get(id));
+    }
+    function clearLiveRunCache(id) {
+      if (id) liveRunCache.delete(id);
     }
     function stopActiveRunMonitor() {
       if (activeRunPollTimer) clearInterval(activeRunPollTimer);
@@ -1337,6 +1433,7 @@
         const data = await request(`/api/conversations/${encodeURIComponent(id)}/run${query}`);
         if (activeRunPollId !== id || currentConversationId !== id) return;
         if (data.running) {
+          cacheLiveRun(id, data.run, {delta: true});
           renderRecoveredRun(data.run, {delta: true});
           return;
         }
@@ -1349,6 +1446,7 @@
         }
         const conversation = conversationData.conversation;
         conversationCache.set(id, conversation);
+        if (!conversation.running) clearLiveRunCache(id);
         renderConversation(conversation);
         if (conversation.running) startActiveRunMonitor(id);
         else setBusy(false);
@@ -1382,12 +1480,13 @@
         const conversation = data.conversation;
         conversationCache.set(id, conversation);
         if (conversation.running) {
+          cacheLiveRun(id, conversation.run);
           if (activeRunPollId !== id) {
             if (activeStreamId === id && activeStreamController) return;
             renderConversation(conversation);
             startActiveRunMonitor(id);
           } else {
-            renderRecoveredRun(conversation.run, {delta: false});
+            renderRecoveredRun(getLiveRunSnapshot(id), {delta: false});
           }
           return;
         }
@@ -1401,6 +1500,7 @@
             activeSendToken += 1;
             activeStreamController.abort();
           }
+          clearLiveRunCache(id);
           renderConversation(conversation);
           setBusy(false);
           await loadList();
@@ -1418,12 +1518,14 @@
       const runData = await request(`/api/conversations/${encodeURIComponent(id)}/run`);
       if (currentConversationId !== id) return false;
       if (runData.running) {
+        cacheLiveRun(id, runData.run);
         startActiveRunMonitor(id);
         return true;
       }
       const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
       const conversation = data.conversation;
       conversationCache.set(id, conversation);
+      clearLiveRunCache(id);
       renderConversation(conversation);
       setConversationRunning(id, false);
       return false;
@@ -1447,7 +1549,7 @@
       const cached = conversationCache.get(id);
       if (cached) {
         renderConversation(cached);
-        if (cached.running) startActiveRunMonitor(id);
+        if (cached.running || hasLiveRunCache(id)) startActiveRunMonitor(id);
         return;
       }
       renderConversationLoading();
@@ -1456,7 +1558,7 @@
         conversationCache.set(id, data.conversation);
         if (currentConversationId === id) {
           renderConversation(data.conversation);
-          if (data.conversation.running) startActiveRunMonitor(id);
+          if (data.conversation.running || hasLiveRunCache(id)) startActiveRunMonitor(id);
         }
       } catch (error) {
         if (currentConversationId === id) renderWelcome();
@@ -1480,6 +1582,7 @@
       if (!confirm('删除这个对话？其中的图片也会从服务器删除。')) return;
       try {
         conversationCache.delete(currentConversationId);
+        clearLiveRunCache(currentConversationId);
         await request(`/api/conversations/${encodeURIComponent(currentConversationId)}`, {method: 'DELETE'});
         currentConversationId = null;
         await loadList();
@@ -2221,6 +2324,10 @@
           let event;
           try { event = JSON.parse(line); } catch { return; }
           if (event.type === 'heartbeat') return;
+          if (event.type === 'accepted') {
+            markLiveRunStarted(id, event.runId);
+            return;
+          }
           if (event.type === 'final') {
             removeLastThought(event.answer || event.message?.text || '');
             finalData = event;
@@ -2236,7 +2343,10 @@
             activeRunPanel?.classList.add('done');
             if (activeRunPanel) updateRunCount(activeRunPanel);
           }
-          else appendRunEvent(event);
+          else {
+            cacheLiveRunEvent(id, event);
+            appendRunEvent(event);
+          }
         };
         while (true) {
           const chunk = await reader.read();
@@ -2283,16 +2393,33 @@
       if (!currentConversationId) return;
       const text = input.value.trim();
       if (!text && !pendingImages.length) return;
+      const id = currentConversationId;
       const files = pendingImages.slice();
-      conversationCache.delete(currentConversationId);
+      const baseConversation = activeConversationData?.id === id
+        ? activeConversationData
+        : conversationCache.get(id);
+      beginLiveRunCache(id);
+      if (baseConversation) {
+        conversationCache.set(id, {
+          ...baseConversation,
+          running: true,
+          run: null,
+          messages: [...(baseConversation.messages || []), {
+            id: `pending-${Date.now()}`,
+            role: 'user',
+            text,
+            images: files.map(item => ({name: item.file.name, url: item.dataUrl})),
+            createdAt: new Date().toISOString()
+          }]
+        });
+      }
       addOptimisticMessage(text, files);
-      setConversationRunning(currentConversationId, true);
+      setConversationRunning(id, true);
       input.value = '';
       input.style.height = 'auto';
       pendingImages = [];
       renderPendingImages();
       setBusy(true);
-      const id = currentConversationId;
       const sendToken = ++activeSendToken;
       let keepBusy = false;
       try {
@@ -2304,6 +2431,8 @@
           images: files.map(item => ({name: item.file.name, type: item.file.type, data: item.dataUrl}))
         });
         finishRunPanel();
+        clearLiveRunCache(id);
+        conversationCache.delete(id);
         setConversationRunning(id, false);
         if (currentConversationId === id && result.message) renderMessage(result.message, {skipRunEvents: true});
         if (activeConversationData?.id === id && result.message) {
@@ -2337,6 +2466,8 @@
             showToast(`连接中断，恢复失败：${recoverError.message || error.message}`);
           }
         } else {
+          clearLiveRunCache(id);
+          conversationCache.delete(id);
           if (error.messageData && currentConversationId === id) renderMessage(error.messageData, {skipRunEvents: true});
           appendRunEvent({type: 'error', text: error.message});
           activeRunPanel?.classList.add('done');
@@ -2372,6 +2503,7 @@
           try {
             const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
             conversationCache.set(id, data.conversation);
+            if (!data.conversation.running) clearLiveRunCache(id);
             renderConversation(data.conversation);
             if (data.conversation.running) startActiveRunMonitor(id);
             else setBusy(false);
