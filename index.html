@@ -63,6 +63,8 @@
     .conversation.active { background: #2b2b2b; }
     .conversation-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
     .conversation-time { float: right; color: var(--muted-2); font-size: 11px; margin-left: 8px; }
+    .conversation-spinner { float: right; width: 13px; height: 13px; margin: 1px 1px 0 8px; border: 2px solid #666; border-top-color: #e7e7e7; border-radius: 50%; animation: conversation-spin .8s linear infinite; }
+    @keyframes conversation-spin { to { transform: rotate(360deg); } }
     .empty-list { color: var(--muted); font-size: 13px; line-height: 1.6; padding: 18px 10px; }
     .sidebar-footer { color: var(--muted-2); font-size: 11px; padding: 12px 7px 2px; line-height: 1.5; }
 
@@ -118,9 +120,10 @@
     .message-content a.message-link:hover { text-decoration: underline; }
     .message.user .message-content { display: inline-block; padding: 9px 13px; border-radius: 14px; background: var(--user); line-height: 1.55; }
     .message.user { justify-content: flex-end; }
-    .message.user .message-body { order: 1; flex: 0 1 auto; max-width: min(78%, 680px); text-align: left; }
+    .message.user .message-body { order: 1; flex: 0 1 auto; max-width: min(78%, 680px); text-align: right; }
     .message.user .avatar { order: 2; }
     .message.user .message-head { justify-content: flex-end; }
+    .message.user .message-content { text-align: left; }
     .message.user .image-grid { justify-content: flex-end; }
     .message.error .message-content { color: #fca5a5; }
     .message-content pre { overflow-x: auto; margin: 6px 0; padding: 7px 9px; border: 1px solid #333; border-radius: 8px; background: #0b0b0b; color: #d6d6d6; font-size: 14px; line-height: 1.5; }
@@ -172,16 +175,29 @@
     .run-panel.collapsed .run-events { display: none; }
     .run-events { padding: 2px 0 4px 4px; }
     .run-command-group { padding: 3px 0; }
-    .run-command-group-summary { width: 100%; display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 0; border: 0; background: transparent; color: #969696; font: inherit; font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; }
+    .run-command-group-summary { width: 100%; display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 0; border: 0; background: transparent; color: #969696; font-family: inherit; font-size: 12px; font-weight: 400; line-height: 1.45; text-align: left; cursor: pointer; }
     .run-command-group-summary:hover { color: #dedede; }
     .run-command-group-icon { width: 22px; flex: 0 0 22px; display: grid; place-items: center; line-height: 1; }
-    .run-command-group-icon { font-size: 15px; }
+    .run-command-group-icon { font-size: 13px; }
     .run-command-group-icon svg { width: 16px; height: 16px; }
+    .run-command-group-summary > span:not(.run-command-group-icon):not(.run-command-group-toggle),
+    .run-command-group-count { font-family: inherit; font-size: inherit; font-weight: inherit; line-height: inherit; }
     .run-command-group-count { color: #a6a6a6; }
     .run-command-group-toggle { width: 18px; flex: 0 0 18px; margin-left: auto; color: #8b8b8b; font-size: 14px; line-height: 1; text-align: center; transition: transform .16s ease; }
     .run-command-group.collapsed .run-command-group-toggle { transform: rotate(-90deg); }
     .run-command-group-rows { padding-left: 4px; }
     .run-command-group.collapsed .run-command-group-rows { display: none; }
+    .run-command-group[data-status="running"] .run-command-group-summary { animation: run-command-active 2.8s ease-in-out infinite; }
+    .run-event.run-todo-list { display: flex; flex-direction: column; align-items: stretch; gap: 0; max-width: min(340px, 100%); margin: 5px 0; padding: 6px 10px; border-radius: 9px; background: #202222; color: #c7c9c9; }
+    .run-todo-item { display: flex; align-items: center; gap: 7px; min-height: 21px; font-size: 11px; line-height: 1.35; }
+    .run-todo-item + .run-todo-item { margin-top: 1px; }
+    .run-todo-icon { width: 13px; height: 13px; flex: 0 0 13px; display: grid; place-items: center; border: 1.2px solid #b7bbbb; border-radius: 50%; color: #b7bbbb; font-size: 9px; line-height: 1; }
+    .run-todo-item.done { color: #858a8a; }
+    .run-todo-item.done .run-todo-icon { border-color: #929797; color: #929797; }
+    .run-todo-item.active .run-todo-icon { border-color: #d1d4d4; color: #d1d4d4; }
+    .run-todo-text { min-width: 0; overflow-wrap: anywhere; }
+    html[data-theme="light"] .run-todo-list { background: #f0f1f2; color: #50545a; }
+    html[data-theme="light"] .run-todo-item.done { color: #8a8e93; }
     .run-event { display: flex; align-items: flex-start; gap: 6px; padding: 5px 0; color: #a7aaa8; font-size: 12px; line-height: 1.45; }
     .run-event + .run-event { border-top: 0; }
     .run-event-icon { width: 15px; flex: 0 0 15px; color: #969696; text-align: center; }
@@ -212,23 +228,13 @@
     .run-terminal-details { grid-column: 2; min-width: 0; }
     .run-event-command { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border: 1px solid #3a3a3a; border-radius: 5px; background: #0b0b0b; color: #d2d2d2; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; cursor: pointer; }
     .run-terminal-details[open] .run-event-command { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .run-terminal[data-status="running"] .run-event-label,
-    .run-web-search[data-status="running"] .run-event-label,
-    .run-web-search[data-status="running"] .run-event-text { animation: run-active-label 2.8s ease-in-out infinite; }
-    .run-wave-char { display: inline-block; white-space: pre; animation: run-wave 2.8s ease-in-out infinite; animation-delay: calc(var(--wave-index) * 52ms); }
-    @keyframes run-wave {
+    .run-wave-char { display: inline; white-space: pre; }
+    @keyframes run-command-active {
       0%, 70%, 100% { opacity: .62; }
-      12%, 28% { opacity: 1; }
-    }
-    @keyframes run-active-label {
-      0%, 70%, 100% { opacity: .62; }
-      25% { opacity: 1; }
+      18%, 34% { opacity: 1; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .run-terminal[data-status="running"] .run-event-label,
-      .run-web-search[data-status="running"] .run-event-label,
-      .run-web-search[data-status="running"] .run-event-text,
-      .run-wave-char { animation: none; }
+      .run-command-group[data-status="running"] .run-command-group-summary { animation: none; }
     }
     .run-event details { margin-top: 3px; }
     .run-event summary { color: #969696; cursor: pointer; font-size: 11px; }
@@ -795,6 +801,7 @@
     let busy = false;
     let activeStreamController = null;
     let activeStreamId = null;
+    let activeStreamStartedAt = 0;
     let activeSendToken = 0;
     let activeRunPanel = null;
     let activeConversationData = null;
@@ -809,6 +816,14 @@
     let activeRunPollTimer = null;
     let activeRunPollId = null;
     let activeRunPollInFlight = false;
+    let activeRunEventRunId = null;
+    let activeRunRenderedEventCount = 0;
+    let activeRunPlaceholderShown = false;
+    let activeRunLastErrorAt = 0;
+    let suppressRunAutoscroll = false;
+    let runAutoscrollFrame = 0;
+    let recoverySyncTimer = null;
+    let recoverySyncInFlight = false;
 
     function applyTheme(theme, save = true) {
       const nextTheme = theme === 'light' ? 'light' : 'dark';
@@ -925,6 +940,8 @@
     }
     const effortLabels = {none: '关闭', low: '轻度', medium: '中', high: '高', xhigh: '极高', max: '最大', ultra: 'Ultra'};
     function effortLabel(value) { return effortLabels[value] || value || '默认'; }
+    const effortToastLabels = {none: 'None', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra'};
+    function effortToastLabel(value) { return effortToastLabels[value] || value || 'Default'; }
     function modelInfo(slug) { return modelCatalog.find(model => model.slug === slug); }
     function updateModelButton() {
       const info = modelInfo(currentSettings.model);
@@ -989,11 +1006,17 @@
         await loadList();
         modelMenu.hidden = true;
         modelButton.classList.remove('open');
-        showToast(`已切换到 ${modelInfo(currentSettings.model)?.displayName || currentSettings.model}`);
+        showToast(`已切换到 ${modelInfo(currentSettings.model)?.displayName || currentSettings.model} ${effortToastLabel(currentSettings.reasoningEffort)}`);
       } catch (error) { showToast(error.message); }
     }
     function closeSidebar() { sidebar.classList.remove('open'); backdrop.classList.remove('show'); }
     function openSidebar() { sidebar.classList.add('open'); backdrop.classList.add('show'); }
+    function setConversationRunning(id, running) {
+      const item = conversations.find(conversation => conversation.id === id);
+      if (!item || item.running === running) return;
+      item.running = running;
+      renderList();
+    }
     function renderList() {
       const query = search.value.trim().toLowerCase();
       const shown = conversations.filter(item => String(item.title || '').toLowerCase().includes(query));
@@ -1006,7 +1029,9 @@
         const button = document.createElement('button');
         button.className = `conversation ${item.id === currentConversationId ? 'active' : ''}`;
         button.dataset.id = item.id;
-        button.innerHTML = `<span class="conversation-time">${escapeHtml(formatTime(item.updatedAt))}</span><span class="conversation-title"></span>`;
+        button.innerHTML = item.running
+          ? '<span class="conversation-spinner" role="status" aria-label="运行中"></span><span class="conversation-title"></span>'
+          : `<span class="conversation-time">${escapeHtml(formatTime(item.updatedAt))}</span><span class="conversation-title"></span>`;
         button.querySelector('.conversation-title').textContent = item.title || '新对话';
         button.addEventListener('click', () => selectConversation(item.id));
         list.appendChild(button);
@@ -1023,7 +1048,10 @@
       const filePaths = new Map();
       const sourceUrls = new Map();
       for (const message of (conversation?.messages || [])) {
-        for (const event of (message.runEvents || [])) {
+        const fileEvents = Array.isArray(message.runEvents) && message.runEvents.length
+          ? message.runEvents.filter(event => event.type === 'file_change')
+          : (message.fileChangeEvents || []);
+        for (const event of fileEvents) {
           if (event.type !== 'file_change') continue;
           for (const item of fileChangeItems(event.data)) {
             const path = String(item.path || item.name || '').trim();
@@ -1127,12 +1155,51 @@
         showToast('已创建分支对话');
       } catch (error) { showToast(error.message); }
     }
-    function renderStoredRun(message) {
-      if (!Array.isArray(message.runEvents) || !message.runEvents.length) return;
+    async function loadStoredRunEvents(panel, message) {
+      if (!panel || panel.dataset.eventsLoaded === 'true' || panel.dataset.eventsLoading === 'true') return;
+      if (!currentConversationId || !message?.id) return;
+      panel.dataset.eventsLoading = 'true';
+      panel.classList.add('loading');
       const previousPanel = activeRunPanel;
-      const panel = createRunPanel();
-      message.runEvents.forEach(appendRunEvent);
-      removeLastThought(message.text);
+      const previousAutoscroll = suppressRunAutoscroll;
+      try {
+        const data = await request(`/api/conversations/${encodeURIComponent(currentConversationId)}/run-events/${encodeURIComponent(message.id)}`);
+        if (!panel.isConnected) return;
+        activeRunPanel = panel;
+        suppressRunAutoscroll = true;
+        const events = Array.isArray(data.events) ? data.events : [];
+        for (let index = 0; index < events.length; index += 1) {
+          appendRunEvent(events[index]);
+          if ((index + 1) % 30 === 0) {
+            await new Promise(resolve => requestAnimationFrame(resolve));
+          }
+        }
+        removeLastThought(message.text);
+        panel.dataset.eventsLoaded = 'true';
+        panel.dataset.totalEventCount = String(events.length);
+        panel.querySelector('.run-title').textContent = message.error ? '出错' : '已完成';
+        panel.classList.add('done');
+        updateRunCount(panel);
+      } catch (error) {
+        if (panel.isConnected) {
+          const errorRow = document.createElement('div');
+          errorRow.className = 'run-event error run-lazy-error';
+          errorRow.textContent = `过程加载失败：${error.message}`;
+          panel.querySelector('.run-events')?.appendChild(errorRow);
+        }
+      } finally {
+        if (activeRunPanel === panel) activeRunPanel = previousPanel;
+        suppressRunAutoscroll = previousAutoscroll;
+        delete panel.dataset.eventsLoading;
+        panel.classList.remove('loading');
+      }
+    }
+    function renderStoredRun(message) {
+      const eventCount = Number(message.runEventCount || message.runEvents?.length || 0);
+      if (!eventCount) return;
+      const previousPanel = activeRunPanel;
+      const panel = createRunPanel({historical: true, message});
+      panel.dataset.totalEventCount = String(eventCount);
       panel.classList.add('done', 'collapsed');
       panel.querySelector('.run-title').textContent = message.error ? '出错' : '已完成';
       panel.querySelector('.run-header')?.setAttribute('aria-expanded', 'false');
@@ -1195,11 +1262,15 @@
       const previousScrollBehavior = messages.style.scrollBehavior;
       messages.style.scrollBehavior = 'auto';
       activeConversationData = conversation;
+      setConversationRunning(conversation.id, Boolean(conversation.running));
       document.getElementById('chatTitle').textContent = conversation.title || '新对话';
       setCurrentSettings(conversation);
       updateDesktopRail(conversation);
       messageColumn.innerHTML = '';
       activeRunPanel = null;
+      activeRunEventRunId = null;
+      activeRunRenderedEventCount = 0;
+      activeRunPlaceholderShown = false;
       if (!conversation.messages?.length) renderWelcome();
       else conversation.messages.forEach(renderMessage);
       const userMessages = messageColumn.querySelectorAll('.message.user');
@@ -1216,27 +1287,77 @@
       activeRunPollTimer = null;
       activeRunPollId = null;
       activeRunPollInFlight = false;
+      activeRunLastErrorAt = 0;
     }
     function ensureRecoveredRunPanel() {
       if (activeRunPanel) return;
       createRunPanel();
       appendRunEvent({type: 'status', text: '后台处理中'});
+      activeRunPlaceholderShown = true;
+    }
+    function renderRecoveredRun(run, options = {}) {
+      if (!run) {
+        ensureRecoveredRunPanel();
+        return;
+      }
+      const isDelta = options.delta === true;
+      const runId = String(run.id || run.runId || 'unknown');
+      const eventCount = Number.isFinite(Number(run.eventCount)) ? Number(run.eventCount) : null;
+      const appendOnly = Boolean(activeRunPanel && activeRunEventRunId === runId && eventCount !== null && eventCount >= activeRunRenderedEventCount);
+      if (!appendOnly) {
+        activeRunPanel?.remove();
+        activeRunPanel = null;
+        createRunPanel();
+        activeRunEventRunId = runId;
+        activeRunRenderedEventCount = 0;
+        activeRunPlaceholderShown = false;
+      }
+      const events = Array.isArray(run.events) ? run.events : [];
+      if (!events.length && !activeRunPlaceholderShown) {
+        appendRunEvent({type: 'status', text: run.status === 'stopping' ? '正在停止' : '后台处理中'});
+        activeRunPlaceholderShown = true;
+      }
+      const newEvents = appendOnly && !isDelta ? events.slice(activeRunRenderedEventCount) : events;
+      newEvents.forEach(appendRunEvent);
+      if (eventCount === null) {
+        activeRunRenderedEventCount = appendOnly
+          ? (isDelta ? activeRunRenderedEventCount + newEvents.length : Math.max(activeRunRenderedEventCount, events.length))
+          : events.length;
+      } else {
+        activeRunRenderedEventCount = eventCount;
+      }
+      if (events.length) activeRunPlaceholderShown = true;
     }
     async function pollActiveRun(id) {
       if (activeRunPollId !== id || currentConversationId !== id || activeRunPollInFlight) return;
       activeRunPollInFlight = true;
       try {
-        const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
-        const conversation = data.conversation;
+        const after = activeRunEventRunId && activeRunPanel ? activeRunRenderedEventCount : 0;
+        const query = after ? `?after=${encodeURIComponent(after)}` : '';
+        const data = await request(`/api/conversations/${encodeURIComponent(id)}/run${query}`);
         if (activeRunPollId !== id || currentConversationId !== id) return;
-        if (conversation?.running) return;
+        if (data.running) {
+          renderRecoveredRun(data.run, {delta: true});
+          return;
+        }
+        const conversationData = await request(`/api/conversations/${encodeURIComponent(id)}`);
+        if (activeRunPollId !== id || currentConversationId !== id) return;
         stopActiveRunMonitor();
+        if (activeStreamId === id && activeStreamController) {
+          activeSendToken += 1;
+          activeStreamController.abort();
+        }
+        const conversation = conversationData.conversation;
         conversationCache.set(id, conversation);
         renderConversation(conversation);
-        setBusy(false);
+        if (conversation.running) startActiveRunMonitor(id);
+        else setBusy(false);
         await loadList();
       } catch (error) {
-        if (currentConversationId === id) showToast(`恢复对话状态失败：${error.message}`);
+        if (currentConversationId === id && Date.now() - activeRunLastErrorAt > 10000) {
+          activeRunLastErrorAt = Date.now();
+          showToast(`恢复对话状态失败，稍后自动重试：${error.message}`);
+        }
       } finally {
         activeRunPollInFlight = false;
       }
@@ -1245,22 +1366,66 @@
       stopActiveRunMonitor();
       if (!id || currentConversationId !== id) return;
       activeRunPollId = id;
+      setConversationRunning(id, true);
       setBusy(true);
       ensureRecoveredRunPanel();
       pollActiveRun(id);
       activeRunPollTimer = setInterval(() => pollActiveRun(id), 1500);
     }
+    async function syncCurrentConversation() {
+      if (recoverySyncInFlight || !appStarted || !currentConversationId || document.visibilityState === 'hidden') return;
+      const id = currentConversationId;
+      recoverySyncInFlight = true;
+      try {
+        const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+        if (currentConversationId !== id) return;
+        const conversation = data.conversation;
+        conversationCache.set(id, conversation);
+        if (conversation.running) {
+          if (activeRunPollId !== id) {
+            if (activeStreamId === id && activeStreamController) return;
+            renderConversation(conversation);
+            startActiveRunMonitor(id);
+          } else {
+            renderRecoveredRun(conversation.run, {delta: false});
+          }
+          return;
+        }
+        const lastMessage = conversation.messages?.[conversation.messages.length - 1];
+        const streamIsCurrent = activeStreamId === id && activeStreamController;
+        const streamTurnAccepted = streamIsCurrent && lastMessage
+          && new Date(lastMessage.createdAt).getTime() >= activeStreamStartedAt - 2000;
+        if (activeRunPollId === id || streamTurnAccepted) {
+          stopActiveRunMonitor();
+          if (streamIsCurrent) {
+            activeSendToken += 1;
+            activeStreamController.abort();
+          }
+          renderConversation(conversation);
+          setBusy(false);
+          await loadList();
+        }
+      } catch {}
+      finally { recoverySyncInFlight = false; }
+    }
+    function scheduleCurrentConversationSync() {
+      if (document.visibilityState === 'hidden') return;
+      clearTimeout(recoverySyncTimer);
+      recoverySyncTimer = setTimeout(() => syncCurrentConversation(), 150);
+    }
     async function recoverConversationAfterConflict(id) {
       conversationCache.delete(id);
-      const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+      const runData = await request(`/api/conversations/${encodeURIComponent(id)}/run`);
       if (currentConversationId !== id) return false;
-      const conversation = data.conversation;
-      conversationCache.set(id, conversation);
-      renderConversation(conversation);
-      if (conversation.running) {
+      if (runData.running) {
         startActiveRunMonitor(id);
         return true;
       }
+      const data = await request(`/api/conversations/${encodeURIComponent(id)}`);
+      const conversation = data.conversation;
+      conversationCache.set(id, conversation);
+      renderConversation(conversation);
+      setConversationRunning(id, false);
       return false;
     }
     async function loadList() {
@@ -1356,13 +1521,14 @@
       reader.readAsDataURL(file);
     }
     function addFiles(files) { Array.from(files || []).forEach(addFile); }
-    function createRunPanel() {
+    function createRunPanel(options = {}) {
       const panel = document.createElement('section');
-      panel.className = 'run-panel';
+      panel.className = `run-panel${options.historical ? ' run-panel-historical' : ''}`;
       panel.innerHTML = '<button class="run-header" type="button" aria-expanded="true"><span class="run-dot"></span><span class="run-title">思考中</span><span class="run-count" hidden></span><span class="run-toggle" hidden>⌄</span></button><div class="run-events"></div>';
       panel.querySelector('.run-header').addEventListener('click', () => {
         const collapsed = panel.classList.toggle('collapsed');
         panel.querySelector('.run-header').setAttribute('aria-expanded', String(!collapsed));
+        if (!collapsed && options.historical) loadStoredRunEvents(panel, options.message);
       });
       messageColumn.appendChild(panel);
       activeRunPanel = panel;
@@ -1380,12 +1546,13 @@
     function updateRunCount(panel) {
       const events = panel.querySelector('.run-events');
       const count = events ? events.querySelectorAll('.run-event').length : 0;
+      const totalCount = Number(panel.dataset.totalEventCount || 0);
       const countNode = panel.querySelector('.run-count');
       const toggleNode = panel.querySelector('.run-toggle');
       countNode.textContent = '';
       countNode.hidden = true;
-      toggleNode.hidden = count === 0 || !panel.classList.contains('done');
-      if (count === 0) {
+      toggleNode.hidden = (count === 0 && totalCount === 0) || !panel.classList.contains('done');
+      if (count === 0 && totalCount === 0) {
         panel.classList.remove('collapsed');
         panel.querySelector('.run-header')?.setAttribute('aria-expanded', 'true');
       }
@@ -1394,10 +1561,53 @@
     function updateCommandGroup(group) {
       const count = group.querySelectorAll('.run-terminal').length;
       group.querySelector('.run-command-group-count').textContent = `${count} 个命令`;
+      refreshCommandGroupActivity(group.closest('.run-panel'));
     }
     function parseRunData(data) {
       if (typeof data !== 'string') return data || {};
       try { return JSON.parse(data); } catch { return {}; }
+    }
+    function todoListItems(data) {
+      const root = parseRunData(data);
+      const rawItems = Array.isArray(root?.items)
+        ? root.items
+        : (Array.isArray(root?.todos) ? root.todos : (Array.isArray(root) ? root : []));
+      const firstPending = rawItems.findIndex(raw => {
+        const item = raw && typeof raw === 'object' ? raw : {text: raw};
+        const status = String(item.status || item.state || '').toLowerCase();
+        return !(item.completed === true || item.done === true || ['completed', 'complete', 'done', 'finished'].includes(status));
+      });
+      return rawItems.map((raw, index) => {
+        const item = raw && typeof raw === 'object' ? raw : {text: raw};
+        const status = String(item.status || item.state || '').toLowerCase();
+        const completed = item.completed === true || item.done === true || ['completed', 'complete', 'done', 'finished'].includes(status);
+        const text = String(item.text || item.title || item.label || item.content || '').trim();
+        const active = !completed && (['in_progress', 'in-progress', 'running', 'active', 'current'].includes(status) || index === firstPending);
+        return {text, completed, active};
+      }).filter(item => item.text);
+    }
+    function upsertTodoList(panel, event) {
+      const events = panel.querySelector('.run-events');
+      let card = events.querySelector('.run-todo-list');
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'run-event run-todo-list';
+        events.appendChild(card);
+      }
+      card.replaceChildren();
+      todoListItems(event.data).forEach(item => {
+        const row = document.createElement('div');
+        row.className = `run-todo-item${item.completed ? ' done' : (item.active ? ' active' : '')}`;
+        const icon = document.createElement('span');
+        icon.className = 'run-todo-icon';
+        icon.textContent = item.completed ? '✓' : (item.active ? '•' : '');
+        const text = document.createElement('span');
+        text.className = 'run-todo-text';
+        text.textContent = item.text;
+        row.append(icon, text);
+        card.appendChild(row);
+      });
+      updateRunCount(panel);
     }
     function fileChangeItems(data) {
       const root = parseRunData(data);
@@ -1444,7 +1654,9 @@
       };
     }
     function renderFileChangeCards(message) {
-      const events = Array.isArray(message.runEvents) ? message.runEvents.filter(event => event.type === 'file_change') : [];
+      const events = Array.isArray(message.runEvents) && message.runEvents.length
+        ? message.runEvents.filter(event => event.type === 'file_change')
+        : (Array.isArray(message.fileChangeEvents) ? message.fileChangeEvents : []);
       if (!events.length) return null;
       const completedKeys = new Set(events
         .filter(event => parseRunData(event.data)?.status === 'completed')
@@ -1763,6 +1975,16 @@
       events.appendChild(group);
       return group;
     }
+    function refreshCommandGroupActivity(panel) {
+      const groups = Array.from(panel.querySelectorAll('.run-command-group'));
+      let activeGroup = null;
+      groups.forEach(group => {
+        if (group.querySelector('.run-terminal[data-status="running"]')) activeGroup = group;
+      });
+      groups.forEach(group => {
+        group.dataset.status = group === activeGroup ? 'running' : 'completed';
+      });
+    }
     function upsertTerminalEvent(panel, event) {
       const events = panel.querySelector('.run-events');
       const command = event.command || '';
@@ -1829,6 +2051,13 @@
         node.appendChild(span);
       });
     }
+    function scheduleRunAutoscroll() {
+      if (suppressRunAutoscroll || runAutoscrollFrame || !messages) return;
+      runAutoscrollFrame = requestAnimationFrame(() => {
+        runAutoscrollFrame = 0;
+        messages.scrollTop = messages.scrollHeight;
+      });
+    }
     function appendRunEvent(event) {
       const panel = activeRunPanel || createRunPanel();
       if (event.type === 'accepted' || event.type === 'thread') return;
@@ -1856,7 +2085,7 @@
         row.appendChild(body);
         events.appendChild(row);
         updateRunCount(panel);
-        messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       if (event.type === 'file_change') return;
@@ -1865,14 +2094,19 @@
         if (!details || details === '{}' || details === '[]') return;
         event = {...event, type: 'tool', tool: event.tool || '其他步骤'};
       }
+      if (event.type === 'tool' && event.tool === 'todo_list') {
+        upsertTodoList(panel, event);
+        scheduleRunAutoscroll();
+        return;
+      }
       if (event.type === 'tool' && event.tool === 'web_search') {
         upsertWebSearchEvent(panel, event);
-        messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       if (event.type === 'tool_started' || event.type === 'tool_completed') {
         upsertTerminalEvent(panel, event);
-        messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       const events = panel.querySelector('.run-events');
@@ -1910,8 +2144,7 @@
       if (text) {
         const textNode = document.createElement('span');
         textNode.className = 'run-event-text';
-        if (event.type === 'thought') appendWaveText(textNode, text);
-        else textNode.textContent = text;
+        textNode.textContent = text;
         body.appendChild(textNode);
       }
       if (event.command) {
@@ -1935,7 +2168,7 @@
       row.appendChild(body);
       events.appendChild(row);
       updateRunCount(panel);
-      messages.scrollTop = messages.scrollHeight;
+      scheduleRunAutoscroll();
     }
     function removeLastThought(answer = '') {
       const panel = activeRunPanel;
@@ -1958,6 +2191,11 @@
       const controller = new AbortController();
       activeStreamController = controller;
       activeStreamId = id;
+      activeStreamStartedAt = Date.now();
+      let lastActivityAt = Date.now();
+      const streamWatchdog = window.setInterval(() => {
+        if (!controller.signal.aborted && Date.now() - lastActivityAt > 45000) controller.abort();
+      }, 15000);
       try {
         const response = await fetch(`${base}/api/chat/stream`, {
           method: 'POST',
@@ -1979,8 +2217,10 @@
         let errorData = null;
         const consume = line => {
           if (!line.trim()) return;
+          lastActivityAt = Date.now();
           let event;
           try { event = JSON.parse(line); } catch { return; }
+          if (event.type === 'heartbeat') return;
           if (event.type === 'final') {
             removeLastThought(event.answer || event.message?.text || '');
             finalData = event;
@@ -2020,9 +2260,11 @@
         if (controller.signal.aborted) error.clientAborted = true;
         throw error;
       } finally {
+        window.clearInterval(streamWatchdog);
         if (activeStreamController === controller) {
           activeStreamController = null;
           activeStreamId = null;
+          activeStreamStartedAt = 0;
         }
       }
     }
@@ -2030,6 +2272,8 @@
       if (messageColumn.querySelector('.welcome')) messageColumn.innerHTML = '';
       renderMessage({role: 'user', text, images: images.map(item => ({name: item.file.name, url: item.dataUrl})), createdAt: new Date().toISOString()});
       createRunPanel();
+      activeRunEventRunId = null;
+      activeRunRenderedEventCount = 0;
       appendRunEvent({type: 'status', text: '等待 Codex 响应'});
       messages.scrollTop = messages.scrollHeight;
     }
@@ -2042,6 +2286,7 @@
       const files = pendingImages.slice();
       conversationCache.delete(currentConversationId);
       addOptimisticMessage(text, files);
+      setConversationRunning(currentConversationId, true);
       input.value = '';
       input.style.height = 'auto';
       pendingImages = [];
@@ -2059,6 +2304,7 @@
           images: files.map(item => ({name: item.file.name, type: item.file.type, data: item.dataUrl}))
         });
         finishRunPanel();
+        setConversationRunning(id, false);
         if (currentConversationId === id && result.message) renderMessage(result.message, {skipRunEvents: true});
         if (activeConversationData?.id === id && result.message) {
           activeConversationData.messages = [...(activeConversationData.messages || []), result.message];
@@ -2073,6 +2319,10 @@
             keepBusy = await recoverConversationAfterConflict(id);
             showToast(keepBusy ? '上一条消息仍在处理中，已恢复监控。' : '上一条消息已经结束，请重新加载对话。');
           } catch (recoverError) {
+            if (currentConversationId === id) {
+              keepBusy = true;
+              startActiveRunMonitor(id);
+            }
             showToast(recoverError.message || error.message);
           }
         } else if (error.streamDisconnected && currentConversationId === id) {
@@ -2080,6 +2330,10 @@
             keepBusy = await recoverConversationAfterConflict(id);
             showToast(keepBusy ? '实时连接已断开，后台仍在处理中。' : '实时连接已断开，已恢复最终结果。');
           } catch (recoverError) {
+            if (currentConversationId === id) {
+              keepBusy = true;
+              startActiveRunMonitor(id);
+            }
             showToast(`连接中断，恢复失败：${recoverError.message || error.message}`);
           }
         } else {
@@ -2087,6 +2341,7 @@
           appendRunEvent({type: 'error', text: error.message});
           activeRunPanel?.classList.add('done');
           if (activeRunPanel) updateRunCount(activeRunPanel);
+          setConversationRunning(id, false);
           showToast(error.message);
           await loadList();
         }
@@ -2208,6 +2463,11 @@
       const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
       if (files.length) addFiles(files);
     });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') scheduleCurrentConversationSync();
+    });
+    window.addEventListener('pageshow', scheduleCurrentConversationSync);
+    window.addEventListener('online', scheduleCurrentConversationSync);
 
     async function startApp() {
       if (appStarted) return;
