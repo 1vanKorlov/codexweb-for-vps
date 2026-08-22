@@ -1659,6 +1659,7 @@
         panel.classList.remove('collapsed');
         panel.querySelector('.run-header')?.setAttribute('aria-expanded', 'true');
       }
+      refreshCommandGroupActivity(panel);
       refreshTerminalDrawer();
     }
     function updateCommandGroup(group) {
@@ -2079,11 +2080,8 @@
       return group;
     }
     function refreshCommandGroupActivity(panel) {
-      const groups = Array.from(panel.querySelectorAll('.run-command-group'));
-      let activeGroup = null;
-      groups.forEach(group => {
-        if (group.querySelector('.run-terminal[data-status="running"]')) activeGroup = group;
-      });
+      const groups = Array.from(panel?.querySelectorAll('.run-command-group') || []);
+      const activeGroup = panel?.classList.contains('done') ? null : groups[groups.length - 1];
       groups.forEach(group => {
         group.dataset.status = group === activeGroup ? 'running' : 'completed';
       });
