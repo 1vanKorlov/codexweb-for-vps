@@ -173,16 +173,29 @@
     .run-panel.collapsed .run-events { display: none; }
     .run-events { padding: 2px 0 4px 4px; }
     .run-command-group { padding: 3px 0; }
-    .run-command-group-summary { width: 100%; display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 0; border: 0; background: transparent; color: #969696; font: inherit; font-size: 12px; line-height: 1.45; text-align: left; cursor: pointer; }
+    .run-command-group-summary { width: 100%; display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 0; border: 0; background: transparent; color: #969696; font-family: inherit; font-size: 12px; font-weight: 400; line-height: 1.45; text-align: left; cursor: pointer; }
     .run-command-group-summary:hover { color: #dedede; }
     .run-command-group-icon { width: 22px; flex: 0 0 22px; display: grid; place-items: center; line-height: 1; }
-    .run-command-group-icon { font-size: 15px; }
+    .run-command-group-icon { font-size: 13px; }
     .run-command-group-icon svg { width: 16px; height: 16px; }
+    .run-command-group-summary > span:not(.run-command-group-icon):not(.run-command-group-toggle),
+    .run-command-group-count { font-family: inherit; font-size: inherit; font-weight: inherit; line-height: inherit; }
     .run-command-group-count { color: #a6a6a6; }
     .run-command-group-toggle { width: 18px; flex: 0 0 18px; margin-left: auto; color: #8b8b8b; font-size: 14px; line-height: 1; text-align: center; transition: transform .16s ease; }
     .run-command-group.collapsed .run-command-group-toggle { transform: rotate(-90deg); }
     .run-command-group-rows { padding-left: 4px; }
     .run-command-group.collapsed .run-command-group-rows { display: none; }
+    .run-command-group[data-status="running"] .run-command-group-summary { animation: run-command-active 2.8s ease-in-out infinite; }
+    .run-todo-list { display: block; max-width: min(360px, 100%); margin: 7px 0; padding: 8px 12px; border-radius: 12px; background: #202222; color: #c7c9c9; }
+    .run-todo-item { display: flex; align-items: center; gap: 9px; min-height: 25px; font-size: 13px; line-height: 1.45; }
+    .run-todo-item + .run-todo-item { margin-top: 1px; }
+    .run-todo-icon { width: 15px; height: 15px; flex: 0 0 15px; display: grid; place-items: center; border: 1.3px solid #b7bbbb; border-radius: 50%; color: #b7bbbb; font-size: 10px; line-height: 1; }
+    .run-todo-item.done { color: #858a8a; }
+    .run-todo-item.done .run-todo-icon { border-color: #929797; color: #929797; }
+    .run-todo-item.active .run-todo-icon { border-color: #d1d4d4; color: #d1d4d4; }
+    .run-todo-text { min-width: 0; overflow-wrap: anywhere; }
+    html[data-theme="light"] .run-todo-list { background: #f0f1f2; color: #50545a; }
+    html[data-theme="light"] .run-todo-item.done { color: #8a8e93; }
     .run-event { display: flex; align-items: flex-start; gap: 6px; padding: 5px 0; color: #a7aaa8; font-size: 12px; line-height: 1.45; }
     .run-event + .run-event { border-top: 0; }
     .run-event-icon { width: 15px; flex: 0 0 15px; color: #969696; text-align: center; }
@@ -213,23 +226,13 @@
     .run-terminal-details { grid-column: 2; min-width: 0; }
     .run-event-command { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border: 1px solid #3a3a3a; border-radius: 5px; background: #0b0b0b; color: #d2d2d2; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; cursor: pointer; }
     .run-terminal-details[open] .run-event-command { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .run-terminal[data-status="running"] .run-event-label,
-    .run-web-search[data-status="running"] .run-event-label,
-    .run-web-search[data-status="running"] .run-event-text { animation: run-active-label 2.8s ease-in-out infinite; }
-    .run-wave-char { display: inline-block; white-space: pre; animation: run-wave 2.8s ease-in-out infinite; animation-delay: calc(var(--wave-index) * 52ms); }
-    @keyframes run-wave {
+    .run-wave-char { display: inline; white-space: pre; }
+    @keyframes run-command-active {
       0%, 70%, 100% { opacity: .62; }
-      12%, 28% { opacity: 1; }
-    }
-    @keyframes run-active-label {
-      0%, 70%, 100% { opacity: .62; }
-      25% { opacity: 1; }
+      18%, 34% { opacity: 1; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .run-terminal[data-status="running"] .run-event-label,
-      .run-web-search[data-status="running"] .run-event-label,
-      .run-web-search[data-status="running"] .run-event-text,
-      .run-wave-char { animation: none; }
+      .run-command-group[data-status="running"] .run-command-group-summary { animation: none; }
     }
     .run-event details { margin-top: 3px; }
     .run-event summary { color: #969696; cursor: pointer; font-size: 11px; }
@@ -816,6 +819,7 @@
     let activeRunPlaceholderShown = false;
     let activeRunLastErrorAt = 0;
     let suppressRunAutoscroll = false;
+    let runAutoscrollFrame = 0;
     let recoverySyncTimer = null;
     let recoverySyncInFlight = false;
 
@@ -1536,10 +1540,54 @@
     function updateCommandGroup(group) {
       const count = group.querySelectorAll('.run-terminal').length;
       group.querySelector('.run-command-group-count').textContent = `${count} 个命令`;
+      const running = Boolean(group.querySelector('.run-terminal[data-status="running"]'));
+      group.dataset.status = running ? 'running' : 'completed';
     }
     function parseRunData(data) {
       if (typeof data !== 'string') return data || {};
       try { return JSON.parse(data); } catch { return {}; }
+    }
+    function todoListItems(data) {
+      const root = parseRunData(data);
+      const rawItems = Array.isArray(root?.items)
+        ? root.items
+        : (Array.isArray(root?.todos) ? root.todos : (Array.isArray(root) ? root : []));
+      const firstPending = rawItems.findIndex(raw => {
+        const item = raw && typeof raw === 'object' ? raw : {text: raw};
+        const status = String(item.status || item.state || '').toLowerCase();
+        return !(item.completed === true || item.done === true || ['completed', 'complete', 'done', 'finished'].includes(status));
+      });
+      return rawItems.map((raw, index) => {
+        const item = raw && typeof raw === 'object' ? raw : {text: raw};
+        const status = String(item.status || item.state || '').toLowerCase();
+        const completed = item.completed === true || item.done === true || ['completed', 'complete', 'done', 'finished'].includes(status);
+        const text = String(item.text || item.title || item.label || item.content || '').trim();
+        const active = !completed && (['in_progress', 'in-progress', 'running', 'active', 'current'].includes(status) || index === firstPending);
+        return {text, completed, active};
+      }).filter(item => item.text);
+    }
+    function upsertTodoList(panel, event) {
+      const events = panel.querySelector('.run-events');
+      let card = events.querySelector('.run-todo-list');
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'run-event run-todo-list';
+        events.appendChild(card);
+      }
+      card.replaceChildren();
+      todoListItems(event.data).forEach(item => {
+        const row = document.createElement('div');
+        row.className = `run-todo-item${item.completed ? ' done' : (item.active ? ' active' : '')}`;
+        const icon = document.createElement('span');
+        icon.className = 'run-todo-icon';
+        icon.textContent = item.completed ? '✓' : (item.active ? '•' : '');
+        const text = document.createElement('span');
+        text.className = 'run-todo-text';
+        text.textContent = item.text;
+        row.append(icon, text);
+        card.appendChild(row);
+      });
+      updateRunCount(panel);
     }
     function fileChangeItems(data) {
       const root = parseRunData(data);
@@ -1973,6 +2021,13 @@
         node.appendChild(span);
       });
     }
+    function scheduleRunAutoscroll() {
+      if (suppressRunAutoscroll || runAutoscrollFrame || !messages) return;
+      runAutoscrollFrame = requestAnimationFrame(() => {
+        runAutoscrollFrame = 0;
+        messages.scrollTop = messages.scrollHeight;
+      });
+    }
     function appendRunEvent(event) {
       const panel = activeRunPanel || createRunPanel();
       if (event.type === 'accepted' || event.type === 'thread') return;
@@ -2000,7 +2055,7 @@
         row.appendChild(body);
         events.appendChild(row);
         updateRunCount(panel);
-        if (!suppressRunAutoscroll) messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       if (event.type === 'file_change') return;
@@ -2009,14 +2064,19 @@
         if (!details || details === '{}' || details === '[]') return;
         event = {...event, type: 'tool', tool: event.tool || '其他步骤'};
       }
+      if (event.type === 'tool' && event.tool === 'todo_list') {
+        upsertTodoList(panel, event);
+        scheduleRunAutoscroll();
+        return;
+      }
       if (event.type === 'tool' && event.tool === 'web_search') {
         upsertWebSearchEvent(panel, event);
-        if (!suppressRunAutoscroll) messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       if (event.type === 'tool_started' || event.type === 'tool_completed') {
         upsertTerminalEvent(panel, event);
-        if (!suppressRunAutoscroll) messages.scrollTop = messages.scrollHeight;
+        scheduleRunAutoscroll();
         return;
       }
       const events = panel.querySelector('.run-events');
@@ -2054,8 +2114,7 @@
       if (text) {
         const textNode = document.createElement('span');
         textNode.className = 'run-event-text';
-        if (event.type === 'thought') appendWaveText(textNode, text);
-        else textNode.textContent = text;
+        textNode.textContent = text;
         body.appendChild(textNode);
       }
       if (event.command) {
@@ -2079,7 +2138,7 @@
       row.appendChild(body);
       events.appendChild(row);
       updateRunCount(panel);
-      if (!suppressRunAutoscroll) messages.scrollTop = messages.scrollHeight;
+      scheduleRunAutoscroll();
     }
     function removeLastThought(answer = '') {
       const panel = activeRunPanel;
